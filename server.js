@@ -10,8 +10,17 @@ const server = createServer(app);
 const io = new Server(server, { cors: { origin: '*' } });
 const PORT = process.env.PORT || 3001;
 
-app.use(express.static(join(__dirname, 'dist')));
-app.get('*', (req, res) => res.sendFile(join(__dirname, 'dist', 'index.html')));
+app.use(express.static(join(__dirname, 'dist'), {
+  setHeaders: (res, filePath) => {
+    if (filePath.endsWith('.js')) res.setHeader('Content-Type', 'application/javascript');
+    if (filePath.endsWith('.css')) res.setHeader('Content-Type', 'text/css');
+  },
+}));
+app.get('*', (req, res) => {
+  if (!req.path.startsWith('/socket.io')) {
+    res.sendFile(join(__dirname, 'dist', 'index.html'));
+  }
+});
 
 // ---------------------------------------------------------------------------
 // Venture Definitions
