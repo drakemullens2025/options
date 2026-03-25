@@ -795,43 +795,83 @@ io.on('connection', (socket) => {
     notifyInstructor(room);
   });
 
-  socket.on('undo-option', ({ ventureId }, cb) => {
+  socket.on('sell-option', ({ ventureId, contracts: qty }, cb) => {
     const room = rooms.get(currentRoom);
     if (!room || room.status !== 'playing') return cb?.({ error: 'Round not active' });
     const player = room.players.get(socket.id);
     if (!player) return cb?.({ error: 'Not in game' });
+    const venture = room.ventures.find(v => v.id === ventureId);
+    if (!venture) return cb?.({ error: 'Venture not found' });
 
     const position = player.options.find(o => o.ventureId === ventureId);
-    if (!position || !position.thisRoundQty) return cb?.({ error: 'Nothing to undo this round' });
+    if (!position || position.contracts <= 0) return cb?.({ error: 'No position to sell' });
 
-    // Refund at original purchase price (not current premium)
-    player.cash += position.thisRoundCost;
-    position.contracts -= position.thisRoundQty;
+    const n = Math.min(Math.max(1, Math.round(Number(qty))), position.contracts);
+    const revenue = venture.currentPremium * n;
 
-    // Reverse demand impact
-    const d = room.roundDemand.get(ventureId) || { buys: 0, sells: 0 };
-    d.buys = Math.max(0, d.buys - position.thisRoundQty);
-    room.roundDemand.set(ventureId, d);
+    player.cash += revenue;
+    position.contracts -= n;
 
-    // Remove history entries for this round's buys on this venture
-    player.history = player.history.filter(h =>
-      !(h.round === room.round && h.phase === room.phase && h.action === 'buy_option' && h.ventureId === ventureId)
-    );
+    // If we're selling contracts we bought this round, reduce thisRoundQty too
+    const undoFromThisRound = Math.min(n, position.thisRoundQty || 0);
+    if (undoFromThisRound > 0) {
+      const costPerThisRound = position.thisRoundCost / position.thisRoundQty;
+      position.thisRoundQty -= undoFromThisRound;
+      position.thisRoundCost -= Math.round(costPerThisRound * undoFromThisRound);
+    }
 
     if (position.contracts <= 0) {
       player.options = player.options.filter(o => o.ventureId !== ventureId);
-    } else {
-      // Recalculate avg cost from remaining (prior-round) contracts
-      const priorCost = position.premiumPerContract * (position.contracts + position.thisRoundQty) - position.thisRoundCost;
-      position.premiumPerContract = Math.round(priorCost / position.contracts);
-      position.thisRoundQty = 0;
-      position.thisRoundCost = 0;
     }
 
+    player.history.push({
+      round: room.round, phase: room.phase,
+      action: 'sell_option', ventureId, contracts: n,
+      premium: venture.currentPremium, revenue,
+    });
+
+    // Sells push demand down
+    const d = room.roundDemand.get(ventureId) || { buys: 0, sells: 0 };
+    d.sells += n;
+    room.roundDemand.set(ventureId, d);
     updateAllPremiums(room);
+
     cb?.({ success: true });
     socket.emit('game-state', stateForStudent(room, player));
     broadcastPremiums(room);
+    notifyInstructor(room);
+  });
+
+  socket.on('sell-equity', ({ ventureId, shares: qty }, cb) => {
+    const room = rooms.get(currentRoom);
+    if (!room || room.status !== 'playing') return cb?.({ error: 'Round not active' });
+    const player = room.players.get(socket.id);
+    if (!player) return cb?.({ error: 'Not in game' });
+    const venture = room.ventures.find(v => v.id === ventureId);
+    if (!venture) return cb?.({ error: 'Venture not found' });
+
+    const position = player.equity.find(e => e.ventureId === ventureId);
+    if (!position || position.shares <= 0) return cb?.({ error: 'No equity to sell' });
+
+    const sellShares = qty === 'all' ? position.shares : Math.min(Number(qty), position.shares);
+    const revenue = Math.round(sellShares * venture.sharePrice * 100) / 100;
+
+    player.cash += revenue;
+    const soldFraction = sellShares / position.shares;
+    position.shares -= sellShares;
+    position.amount -= Math.round(position.amount * soldFraction);
+
+    if (position.shares <= 0.001) {
+      player.equity = player.equity.filter(e => e.ventureId !== ventureId);
+    }
+
+    player.history.push({
+      round: room.round, phase: room.phase,
+      action: 'sell_equity', ventureId, shares: sellShares, revenue,
+    });
+
+    cb?.({ success: true });
+    socket.emit('game-state', stateForStudent(room, player));
     notifyInstructor(room);
   });
 

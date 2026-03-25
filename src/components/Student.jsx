@@ -63,7 +63,7 @@ function MetricsGrid({ metrics }) {
   );
 }
 
-function VentureCard({ venture, phase, playerCash, playerOptions, playerEquity, onBuy, onUndo, roundActive }) {
+function VentureCard({ venture, phase, playerCash, playerOptions, playerEquity, onBuy, onSell, onSellEquity, roundActive }) {
   const [expanded, setExpanded] = useState(false);
   const [showOutlook, setShowOutlook] = useState(false);
   const [flash, setFlash] = useState(false);
@@ -192,10 +192,15 @@ function VentureCard({ venture, phase, playerCash, playerOptions, playerEquity, 
                   P&L: {posPnl >= 0 ? '+' : ''}{fmt(posPnl)} ({posCost > 0 ? (posPnl / posCost * 100).toFixed(0) : 0}%)
                 </span>
               </div>
-              {roundActive && undoable > 0 && (
+              {roundActive && contracts > 0 && (
                 <div className="sell-buttons">
-                  <button className="btn-undo" onClick={() => onUndo(venture.id)}>
-                    Undo ({undoable} this round)
+                  {contracts > 1 && (
+                    <button className="btn-sell" onClick={() => onSell(venture.id, Math.ceil(contracts / 2))}>
+                      Sell {Math.ceil(contracts / 2)}
+                    </button>
+                  )}
+                  <button className="btn-sell" onClick={() => onSell(venture.id, contracts)}>
+                    Sell All
                   </button>
                 </div>
               )}
@@ -212,6 +217,13 @@ function VentureCard({ venture, phase, playerCash, playerOptions, playerEquity, 
                   P&L: {equityValue >= equityInvested ? '+' : ''}{fmt(Math.round(equityValue - equityInvested))}
                 </span>
               </div>
+              {roundActive && (
+                <div className="sell-buttons">
+                  <button className="btn-sell" onClick={() => onSellEquity(venture.id, 'all')}>
+                    Sell All
+                  </button>
+                </div>
+              )}
             </div>
           )}
         </div>
@@ -363,8 +375,12 @@ export default function Student({ state, playerName, roundResults, debriefData, 
     socket.emit('buy-option', { ventureId, contracts }, (r) => r?.error && console.warn(r.error));
   }, []);
 
-  const handleUndo = useCallback((ventureId) => {
-    socket.emit('undo-option', { ventureId }, (r) => r?.error && console.warn(r.error));
+  const handleSell = useCallback((ventureId, contracts) => {
+    socket.emit('sell-option', { ventureId, contracts }, (r) => r?.error && console.warn(r.error));
+  }, []);
+
+  const handleSellEquity = useCallback((ventureId, shares) => {
+    socket.emit('sell-equity', { ventureId, shares }, (r) => r?.error && console.warn(r.error));
   }, []);
 
   const dismiss = useCallback(() => {
@@ -423,7 +439,7 @@ export default function Student({ state, playerName, roundResults, debriefData, 
         {ventures.map(v => (
           <VentureCard key={v.id} venture={v} phase={phase}
             playerCash={player.cash} playerOptions={player.options} playerEquity={player.equity}
-            onBuy={handleBuy} onUndo={handleUndo} roundActive={status === 'playing'} />
+            onBuy={handleBuy} onSell={handleSell} onSellEquity={handleSellEquity} roundActive={status === 'playing'} />
         ))}
       </div>
 
