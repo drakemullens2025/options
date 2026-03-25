@@ -732,9 +732,10 @@ io.on('connection', (socket) => {
     room.status = 'playing';
     room.roundDemand = new Map();
     room.roundEndTime = Date.now() + 210_000;
-    // Reset per-round undo tracking on all positions
+    // Reset per-round tracking on all positions
     for (const [, p] of room.players) {
       for (const opt of p.options) { opt.thisRoundQty = 0; opt.thisRoundCost = 0; }
+      for (const eq of p.equity) { eq.thisRoundShares = 0; eq.thisRoundCost = 0; }
     }
     updateAllPremiums(room);
     broadcastState(room);
@@ -807,18 +808,22 @@ io.on('connection', (socket) => {
     if (!position || position.contracts <= 0) return cb?.({ error: 'No position to sell' });
 
     const n = Math.min(Math.max(1, Math.round(Number(qty))), position.contracts);
-    const revenue = venture.currentPremium * n;
+
+    // Split: prior-round contracts sell at market, this-round contracts refund at cost
+    const priorHeld = position.contracts - (position.thisRoundQty || 0);
+    const sellingPrior = Math.min(n, priorHeld);
+    const sellingThisRound = n - sellingPrior;
+
+    let revenue = sellingPrior * venture.currentPremium;
+    if (sellingThisRound > 0 && position.thisRoundQty > 0) {
+      const costPer = position.thisRoundCost / position.thisRoundQty;
+      revenue += Math.round(costPer * sellingThisRound);
+      position.thisRoundQty -= sellingThisRound;
+      position.thisRoundCost -= Math.round(costPer * sellingThisRound);
+    }
 
     player.cash += revenue;
     position.contracts -= n;
-
-    // If we're selling contracts we bought this round, reduce thisRoundQty too
-    const undoFromThisRound = Math.min(n, position.thisRoundQty || 0);
-    if (undoFromThisRound > 0) {
-      const costPerThisRound = position.thisRoundCost / position.thisRoundQty;
-      position.thisRoundQty -= undoFromThisRound;
-      position.thisRoundCost -= Math.round(costPerThisRound * undoFromThisRound);
-    }
 
     if (position.contracts <= 0) {
       player.options = player.options.filter(o => o.ventureId !== ventureId);
@@ -854,7 +859,19 @@ io.on('connection', (socket) => {
     if (!position || position.shares <= 0) return cb?.({ error: 'No equity to sell' });
 
     const sellShares = qty === 'all' ? position.shares : Math.min(Number(qty), position.shares);
-    const revenue = Math.round(sellShares * venture.sharePrice * 100) / 100;
+
+    // Prior-round shares sell at market, this-round shares refund at cost
+    const priorShares = position.shares - (position.thisRoundShares || 0);
+    const sellingPrior = Math.min(sellShares, priorShares);
+    const sellingThisRound = sellShares - sellingPrior;
+
+    let revenue = Math.round(sellingPrior * venture.sharePrice * 100) / 100;
+    if (sellingThisRound > 0 && position.thisRoundShares > 0) {
+      const costPer = position.thisRoundCost / position.thisRoundShares;
+      revenue += Math.round(costPer * sellingThisRound);
+      position.thisRoundShares -= sellingThisRound;
+      position.thisRoundCost -= Math.round(costPer * sellingThisRound);
+    }
 
     player.cash += revenue;
     const soldFraction = sellShares / position.shares;
@@ -893,8 +910,10 @@ io.on('connection', (socket) => {
     if (existing) {
       existing.amount += amt;
       existing.shares += shares;
+      existing.thisRoundShares = (existing.thisRoundShares || 0) + shares;
+      existing.thisRoundCost = (existing.thisRoundCost || 0) + amt;
     } else {
-      player.equity.push({ ventureId, amount: amt, shares, purchasePrice: venture.sharePrice, round: room.round });
+      player.equity.push({ ventureId, amount: amt, shares, purchasePrice: venture.sharePrice, round: room.round, thisRoundShares: shares, thisRoundCost: amt });
     }
     player.history.push({
       round: room.round, phase: room.phase,
